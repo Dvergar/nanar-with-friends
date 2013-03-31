@@ -7,7 +7,7 @@ import struct
 from PyQt4 import QtGui, QtCore
 
 POS = 0
-
+PING = 1
 
 conn_type = sys.argv[1]
 if len(sys.argv) == 3:
@@ -98,6 +98,7 @@ bs = BinaryStream()
 class Connection:
     def __init__(self, app, conn_type, host='127.0.0.1'):
         self.app = app
+        self.type = conn_type
         port = 50000
         port = 1337
         self.size = 65536
@@ -106,11 +107,12 @@ class Connection:
         print "Connection Type detected :", conn_type
         if conn_type == "server":
             backlog = 5
-            self.clients = []
+            self.clients = {}
             self.server.bind((host, port))
             self.server.listen(backlog)
             self.update = self.server_update
             self.send = self.server_send
+            self.ping_check_time = time.time()
         elif conn_type == "client":
             self.server.connect((host, port))
             self.update = self.client_update
@@ -140,10 +142,7 @@ class Connection:
             if s == self.server:
                 client, address = self.server.accept()
                 self.input.append(client)
-                self.clients.append(client)
-                # msg = "hello"
-                # data = struct.pack("H5s", len(msg), msg)
-                # client.sendall("hello i am server")
+                self.clients[client] = []
                 print "Connection from", address
             else:
                 data = s.recv(self.size)
@@ -153,27 +152,34 @@ class Connection:
                     print "close"
                     s.close()
                     self.input.remove(s)
-                    self.clients.remove(s)
+                    del self.clients[s]
+
+        if time.time() - self.ping_check_time > 1:
+            print "ping"
+            self.ping_check_time = time.time()
+            self.server_send(struct.pack("B", PING))
 
     def server_on_data(self, s, data):
         print s
         print data
-        self.server_send(data)
-        self.process_data(data)
+        # self.server_send(data)
+        self.process_data(data, s)
 
     def client_on_data(self, data):
         print data
         self.process_data(data)
 
     def server_send(self, data):
-        for client in self.clients:
+        print "keys", self.clients.keys()
+        for client in self.clients.keys():
             # print "send to client", data
             client.sendall(data)
 
     def client_send(self, data):
+        print "client send"
         self.server.sendall(data)
 
-    def process_data(self, data):
+    def process_data(self, data, client=None):
         bs.put_data(data)
         print "datalen", len(data), repr(data)
         while bs.working():
@@ -183,6 +189,25 @@ class Connection:
                 # print "len", len(data)
                 pos = bs.read_ushort()
                 self.app.change_pos_from_net(pos)
+                if self.type == "server":
+                    self.send(self.get_datas_slider_update(pos))
+            if msgtype == PING:
+                if self.type == "client":
+                    print "client ping"
+                    self.send(struct.pack("B", PING))
+                elif self.type == "server":
+                    print "server ping"
+                    client_pings = self.clients[client]
+                    ping = time.time() * 1000 - self.ping_check_time * 1000
+                    if len(client_pings) > 10:
+                        del client_pings[0]
+                    client_pings.append(ping)
+                    avg_ping = sum(client_pings) / len(client_pings)
+                    print "pings", client_pings
+                    print "avg_ping", client, avg_ping
+
+    def get_datas_slider_update(self, pos):
+        return struct.pack("!BH", POS, pos)
 
 
 class NanarPlayer(QtGui.QMainWindow):
@@ -214,7 +239,7 @@ class NanarPlayer(QtGui.QMainWindow):
     def change_pos(self):
         print "LOCAL pos", self.slider_pos
         self.set_slider_position(self.slider_pos)
-        self.conn.send(struct.pack("!BH", POS, self.slider_pos))
+        self.conn.send(self.conn.get_datas_slider_update(self.slider_pos))
 
     def change_pos_from_net(self, value):
         print "NET pos", value
