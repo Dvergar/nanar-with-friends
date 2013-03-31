@@ -4,8 +4,7 @@ import select
 import socket
 import sys
 import struct
-from Tkinter import *
-
+from PyQt4 import QtGui, QtCore
 
 POS = 0
 
@@ -23,6 +22,7 @@ class BinaryStream:
         self.ubyte_struct = struct.Struct("!B")
         self.int_struct = struct.Struct("!i")
         self.short_struct = struct.Struct("!h")
+        self.ushort_struct = struct.Struct("!H")
         self.float_struct = struct.Struct("!f")
 
     def put_data(self, data):
@@ -49,10 +49,10 @@ class BinaryStream:
 
     def read_float(self):
         size = 4
-        byte = self.data[self.pos:self.pos + size]
-        byte, = self.float_struct.unpack(byte)
+        _float = self.data[self.pos:self.pos + size]
+        _float, = self.float_struct.unpack(_float)
         self.pos += size
-        return byte
+        return _float
 
     def read_int(self):
         size = 4
@@ -67,6 +67,13 @@ class BinaryStream:
         short, = self.short_struct.unpack(short)
         self.pos += size
         return short
+
+    def read_ushort(self):
+        size = 2
+        ushort = self.data[self.pos:self.pos + size]
+        ushort, = self.ushort_struct.unpack(ushort)
+        self.pos += size
+        return ushort
 
     def read_UTF(self):
         print "UTF", repr(self.data)
@@ -174,50 +181,63 @@ class Connection:
             print "msgtype", msgtype
             if msgtype == POS:
                 # print "len", len(data)
-                pos = bs.read_float()
-                self.app.updateScaleValueFromNet(pos)
+                pos = bs.read_ushort()
+                self.app.change_pos_from_net(pos)
 
 
-class App:
+class NanarPlayer(QtGui.QWidget):
     def __init__(self):
+        super(NanarPlayer, self).__init__()
         self.loop_rate = 10
         self.conn = Connection(self, conn_type, host)
         self.start_video()
         self.UI_init()
+        self.start_loop()
+
+    def start_loop(self):
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.loop)
+        self.timer.start(10)
 
     def start_video(self):
         self.p = vlc.MediaPlayer(
             'C:/Users/Caribou/Dropbox/Public/test_video.avi')
         self.p.audio_set_volume(0)
         self.p.play()
+        self.p.set_position(0.5)
 
     def UI_init(self):
-        self.root = Tk()
-        self.scale = Scale(
-            self.root, from_=0, to=100,
-            orient=HORIZONTAL,
-            command=self.updateScaleValue)
-        self.scale.config(
-            width=50,
-            length=1000,
-            resolution=0.001,
-            label=conn_type)
-        self.scale.pack()
-        self.root.after(self.loop_rate, self.task)
-        self.root.mainloop()
+        sld = QtGui.QSlider(QtCore.Qt.Horizontal, self)
+        sld.setFocusPolicy(QtCore.Qt.NoFocus)
+        sld.setGeometry(30, 30, 500, 30)
+        sld.setRange(0, 1000)
+        sld.valueChanged[int].connect(self.change_pos)
+        sld.setTracking(False)
 
-    def updateScaleValue(self, _):
-        pos = self.scale.get() / 10
+        self.setGeometry(300, 300, 600, 80)
+        self.setWindowTitle(conn_type)
+        self.show()
+
+    def change_pos(self, value):
+        print "LOCAL pos", value
+        self.set_slider_position(value)
+        self.conn.send(struct.pack("!BH", POS, value))
+
+    def change_pos_from_net(self, value):
+        print "NET pos", value
+        self.set_slider_position(value)
+
+    def set_slider_position(self, pos):
+        pos = pos / 1000.
+        if pos >= 1.0:
+            pos = 0.99
         self.p.set_position(pos)
-        posmsg = struct.pack("!Bf", POS, pos)
-        self.conn.send(posmsg)
 
-    def updateScaleValueFromNet(self, pos):
-        self.p.set_position(pos)
-
-    def task(self):
+    def loop(self):
         self.conn.update()
-        self.root.after(self.loop_rate, self.task)
 
 
-App()
+if __name__ == '__main__':
+    app = QtGui.QApplication(sys.argv)
+    NanarPlayer()
+    sys.exit(app.exec_())
