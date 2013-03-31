@@ -122,8 +122,8 @@ class Connection:
         inready, outready, exceptready = select.select(self.input, [], [], 0)
         if len(inready) == 1:
             data = self.server.recv(self.size)
-            # if data:
-            #     self.client_on_data(data)
+            if data:
+                self.client_on_data(data)
 
     def server_update(self):
         # print "server_update"
@@ -160,6 +160,7 @@ class Connection:
 
     def server_send(self, data):
         for client in self.clients:
+            # print "send to client", data
             client.sendall(data)
 
     def client_send(self, data):
@@ -179,6 +180,7 @@ class Connection:
 
 class App:
     def __init__(self):
+        self.loop_rate = 10
         self.conn = Connection(self, conn_type, host)
         self.start_video()
         self.UI_init()
@@ -195,16 +197,19 @@ class App:
             self.root, from_=0, to=100,
             orient=HORIZONTAL,
             command=self.updateScaleValue)
-        self.scale.config(width=50, length=1000, resolution=0.001)
+        self.scale.config(
+            width=50,
+            length=1000,
+            resolution=0.001,
+            label=conn_type)
         self.scale.pack()
-        self.root.after(10, self.task)
+        self.root.after(self.loop_rate, self.task)
         self.root.mainloop()
 
     def updateScaleValue(self, _):
-        pos = self.scale.get() / 100
+        pos = self.scale.get() / 10
         self.p.set_position(pos)
         posmsg = struct.pack("!Bf", POS, pos)
-        print "posmsg", len(posmsg)
         self.conn.send(posmsg)
 
     def updateScaleValueFromNet(self, pos):
@@ -212,7 +217,7 @@ class App:
 
     def task(self):
         self.conn.update()
-        self.root.after(10, self.task)
+        self.root.after(self.loop_rate, self.task)
 
 
 App()
