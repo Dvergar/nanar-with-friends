@@ -6,7 +6,7 @@ import sys
 import struct
 from PyQt4 import QtGui, QtCore
 
-POS = 0
+MOVIE_TIME = 0
 PING = 1
 
 conn_type = sys.argv[1]
@@ -95,6 +95,24 @@ class BinaryStream:
 bs = BinaryStream()
 
 
+class Ping:
+    pending = {}
+    _id = 0
+
+    def __init__(self, client):
+        self.id = Ping._id
+        self.client = client
+        if not client in self.pending:
+            self.pending[client] = {}
+        self.pending[client][self.id] = self
+        self.time = time.time()
+        Ping._id += 1
+
+    def get_value(self):
+        del self.pending[self.client][self.id]
+        return time.time() * 1000 - self.time * 1000
+
+
 class Connection:
     def __init__(self, app, conn_type, host='127.0.0.1'):
         self.app = app
@@ -107,14 +125,15 @@ class Connection:
         print "Connection Type detected :", conn_type
         if conn_type == "server":
             backlog = 5
-            self.clients = {}
+            self.clients = []
+            self.pings = {}
             self.server.bind((host, port))
             self.server.listen(backlog)
             self.update = self.server_update
             self.send = self.server_send
-            self.ping_check_time = time.time()
+            self.ping_check_time = time.time() - 42
         elif conn_type == "client":
-            self.server.connect((host, port))
+            self.server.connect((host, 4242))
             self.update = self.client_update
             self.send = self.client_send
             # self.server.send("hello i am client")
@@ -142,7 +161,8 @@ class Connection:
             if s == self.server:
                 client, address = self.server.accept()
                 self.input.append(client)
-                self.clients[client] = []
+                self.clients.append(client)
+                self.pings[client] = []
                 print "Connection from", address
             else:
                 data = s.recv(self.size)
@@ -152,62 +172,82 @@ class Connection:
                     print "close"
                     s.close()
                     self.input.remove(s)
-                    del self.clients[s]
+                    self.clients.remove(s)
+                    del self.pings[client]
 
-        if time.time() - self.ping_check_time > 1:
-            print "ping"
-            self.ping_check_time = time.time()
-            self.server_send(struct.pack("B", PING))
+        if time.time() - self.ping_check_time > 0.1:
+            for client in self.clients:
+                p = Ping(client)
+                client.sendall(self.get_datas_ping(p.id))
+            # self.server_send()
 
     def server_on_data(self, s, data):
-        print s
-        print data
         # self.server_send(data)
         self.process_data(data, s)
 
     def client_on_data(self, data):
-        print data
         self.process_data(data)
 
     def server_send(self, data):
-        print "keys", self.clients.keys()
-        for client in self.clients.keys():
+        for client in self.clients:
             # print "send to client", data
             client.sendall(data)
 
     def client_send(self, data):
-        print "client send"
         self.server.sendall(data)
+
+    def send_movie_time(self, t):
+        if self.type == "server":
+            for client in self.clients:
+                client_pings = self.pings[client]
+                avg_ping = sum(client_pings) / len(client_pings)
+                new_t = t + avg_ping / 2
+                client.sendall(self.get_datas_slider_update(new_t))
+        elif self.type == "client":
+            self.send(self.get_datas_slider_update(t))
 
     def process_data(self, data, client=None):
         bs.put_data(data)
-        print "datalen", len(data), repr(data)
         while bs.working():
             msgtype = bs.read_byte()
-            print "msgtype", msgtype
-            if msgtype == POS:
+
+            if msgtype == MOVIE_TIME:
                 # print "len", len(data)
-                pos = bs.read_ushort()
-                self.app.change_pos_from_net(pos)
-                if self.type == "server":
-                    self.send(self.get_datas_slider_update(pos))
-            if msgtype == PING:
+                t = bs.read_int()
                 if self.type == "client":
-                    print "client ping"
-                    self.send(struct.pack("B", PING))
+                    self.app.change_pos_from_net(t)  # t already smoothed
                 elif self.type == "server":
-                    print "server ping"
-                    client_pings = self.clients[client]
-                    ping = time.time() * 1000 - self.ping_check_time * 1000
-                    if len(client_pings) > 10:
+                    client_pings = self.pings[client]
+                    avg_ping = sum(client_pings) / len(client_pings)
+
+                    # broadcast
+                    for bclient in self.clients:
+                        if bclient == client:
+                            continue
+                        b_avg_ping = sum(client_pings) / len(client_pings)
+                        new_t = avg_ping / 2 + b_avg_ping / 2 + t
+                        client.sendall(self.get_datas_slider_update(new_t))
+
+                    # update local
+                    self.app.change_pos_from_net(t + avg_ping / 2)
+
+            if msgtype == PING:
+                _id = bs.read_int()
+                if self.type == "client":
+                    self.send(self.get_datas_ping(_id))
+                elif self.type == "server":
+                    ping = Ping.pending[client][_id].get_value()
+                    client_pings = self.pings[client]
+                    if len(client_pings) > 50:
                         del client_pings[0]
                     client_pings.append(ping)
                     avg_ping = sum(client_pings) / len(client_pings)
-                    print "pings", client_pings
-                    print "avg_ping", client, avg_ping
 
     def get_datas_slider_update(self, pos):
-        return struct.pack("!BH", POS, pos)
+        return struct.pack("!Bi", MOVIE_TIME, pos)
+
+    def get_datas_ping(self, _id):
+        return struct.pack("!Bi", PING, _id)
 
 
 class NanarPlayer(QtGui.QMainWindow):
@@ -223,7 +263,7 @@ class NanarPlayer(QtGui.QMainWindow):
         # creating a basic vlc instance
         self.instance = vlc.Instance()
         # creating an empty vlc media player
-        self.mediaplayer = self.instance.media_player_new()
+        self.p = self.instance.media_player_new()
 
         self.createUI()
         self.isPaused = False
@@ -238,18 +278,26 @@ class NanarPlayer(QtGui.QMainWindow):
 
     def change_pos(self):
         print "LOCAL pos", self.slider_pos
-        self.set_slider_position(self.slider_pos)
-        self.conn.send(self.conn.get_datas_slider_update(self.slider_pos))
+        k = self.p.get_length() / 1000.
+        time = k * self.slider_pos
+        print "time", time
 
-    def change_pos_from_net(self, value):
-        print "NET pos", value
-        self.set_slider_position(value)
+        self.set_slider_position(time)
+        self.conn.send_movie_time(time)
 
-    def set_slider_position(self, pos):
+    def change_pos_from_net(self, time):
+        print "NET pos", time
+        self.set_slider_position(time)
+
+    def set_slider_position(self, time):
+        k = self.p.get_length() / 1000.
+        pos = time / k
+        print "new pos", pos
         pos = pos / 1000.
         if pos >= 1.0:
             pos = 0.99
-        self.mediaplayer.set_position(pos)
+        print "setpos", pos
+        self.p.set_position(pos)
 
     def loop(self):
         self.conn.update()
@@ -294,7 +342,7 @@ class NanarPlayer(QtGui.QMainWindow):
         self.hbuttonbox.addStretch(1)
         self.volumeslider = QtGui.QSlider(QtCore.Qt.Horizontal, self)
         self.volumeslider.setMaximum(100)
-        self.volumeslider.setValue(self.mediaplayer.audio_get_volume())
+        self.volumeslider.setValue(self.p.audio_get_volume())
         self.volumeslider.setToolTip("Volume")
         self.hbuttonbox.addWidget(self.volumeslider)
         self.connect(self.volumeslider,
@@ -324,21 +372,21 @@ class NanarPlayer(QtGui.QMainWindow):
                      self.updateUI)
 
     def PlayPause(self):
-        if self.mediaplayer.is_playing():
-            self.mediaplayer.pause()
+        if self.p.is_playing():
+            self.p.pause()
             self.playbutton.setText("Play")
             self.isPaused = True
         else:
-            if self.mediaplayer.play() == -1:
+            if self.p.play() == -1:
                 self.OpenFile()
                 return
-            self.mediaplayer.play()
+            self.p.play()
             self.playbutton.setText("Pause")
             self.timer.start()
             self.isPaused = False
 
     def Stop(self):
-        self.mediaplayer.stop()
+        self.p.stop()
         self.playbutton.setText("Play")
 
     def OpenFile(self, filename=None):
@@ -350,10 +398,11 @@ class NanarPlayer(QtGui.QMainWindow):
         # create the media
         self.media = self.instance.media_new(unicode(filename))
         # put the media in the media player
-        self.mediaplayer.set_media(self.media)
+        self.p.set_media(self.media)
 
         # parse the metadata of the file
         self.media.parse()
+
         # set the title of the track as window title
         self.setWindowTitle(self.media.get_meta(0))
 
@@ -363,26 +412,32 @@ class NanarPlayer(QtGui.QMainWindow):
         # you have to give the id of the QFrame (or similar object) to
         # vlc, different platforms have different functions for this
         if sys.platform == "linux2": # for Linux using the X Server
-            self.mediaplayer.set_xwindow(self.videoframe.winId())
+            self.p.set_xwindow(self.videoframe.winId())
         elif sys.platform == "win32": # for Windows
-            self.mediaplayer.set_hwnd(self.videoframe.winId())
+            self.p.set_hwnd(self.videoframe.winId())
         elif sys.platform == "darwin": # for MacOS
-            self.mediaplayer.set_agl(self.videoframe.windId())
+            self.p.set_agl(self.videoframe.windId())
         self.PlayPause()
 
+        # Ugly but fuck callbacks
+        while self.p.get_length() == 0:
+            pass
+        self.movie_length = self.p.get_length()
+        print "movie_lenght", self.movie_length
+
     def setVolume(self, Volume):
-        self.mediaplayer.audio_set_volume(Volume)
+        self.p.audio_set_volume(Volume)
 
     def setPosition(self, position):
-        self.mediaplayer.set_position(position / 1000.0)
+        self.p.set_position(position / 1000.0)
 
     def updateUI(self):
         """updates the user interface"""
         # setting the slider to the desired position
         if not self.slider_is_moving:
-            self.positionslider.setValue(self.mediaplayer.get_position() * 1000)
+            self.positionslider.setValue(self.p.get_position() * 1000)
 
-        if not self.mediaplayer.is_playing():
+        if not self.p.is_playing():
             # no need to call this function if nothing is played
             self.timer.stop()
             if not self.isPaused:
