@@ -226,7 +226,7 @@ class Connection:
                             continue
                         b_avg_ping = sum(client_pings) / len(client_pings)
                         new_t = avg_ping / 2 + b_avg_ping / 2 + t
-                        client.sendall(self.get_datas_slider_update(new_t))
+                        bclient.sendall(self.get_datas_slider_update(new_t))
 
                     # update local
                     self.app.change_pos_from_net(t + avg_ping / 2)
@@ -270,6 +270,7 @@ class NanarPlayer(QtGui.QMainWindow):
         self.slider_is_moving = False
         self.slider_pos = 0
         self.OpenFile("C:/Users/Caribou/Dropbox/Public/test_video.avi")
+        self.p.audio_set_volume(0)
 
     def start_loop(self):
         self.timer2 = QtCore.QTimer()
