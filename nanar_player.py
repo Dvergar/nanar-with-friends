@@ -154,7 +154,7 @@ class Connection:
         if len(inready) == 1:
             datas = self.server.recv(self.size)
             if datas:
-                print "lendatas", len(datas)
+                # print "lendatas", len(datas)
                 self.buff_datas += datas
                 if not self.reading:
                     if len(self.buff_datas) > 2:
@@ -162,12 +162,12 @@ class Connection:
                             "!H",
                             self.buff_datas[0:2])
                         self.buff_datas = self.buff_datas[2:]
-                        print "lenmsg", self.LEN_MSG
-                        print "lenbuffdatas", len(self.buff_datas)
+                        # print "lenmsg", self.LEN_MSG
+                        # print "lenbuffdatas", len(self.buff_datas)
                         self.reading = True
                 if self.reading:
                     if len(self.buff_datas) >= self.LEN_MSG:
-                        print "CLIENT READABLE"
+                        # print "CLIENT READABLE"
                         # use bytesIo instead
                         goot_data = self.buff_datas[:self.LEN_MSG]
                         self.buff_datas = self.buff_datas[self.LEN_MSG:]
@@ -202,7 +202,7 @@ class Connection:
                             self.reading = True
                     if self.reading:
                         if len(self.buff_datas) >= self.LEN_MSG:
-                            print "SERVER READABLE"
+                            # print "SERVER READABLE"
                             # use bytesIo instead
                             goot_data = self.buff_datas[:self.LEN_MSG]
                             self.buff_datas = self.buff_datas[self.LEN_MSG:]
@@ -259,6 +259,16 @@ class Connection:
         while bs.working():
             msgtype = bs.read_byte()
 
+            if msgtype == PLAYPAUSE:
+                if self.type == "client":
+                    self.app.play_pause()
+                elif self.type == "server":
+                    for bclient in self.clients:
+                        if bclient == client:
+                            continue
+                        self.send(self.get_datas_playpause(), bclient)
+                    self.app.play_pause()
+
             if msgtype == MOVIE_TIME:
                 # print "len", len(data)
                 t = bs.read_int()
@@ -282,7 +292,6 @@ class Connection:
             if msgtype == PING:
                 _id = bs.read_int()
                 if self.type == "client":
-                    print "client ping"
                     self.send(self.get_datas_ping(_id))
                 elif self.type == "server":
                     ping = Ping.pending[client][_id].get_value()
@@ -385,7 +394,7 @@ class NanarPlayer(QtGui.QMainWindow):
         self.playbutton = QtGui.QPushButton("Play")
         self.hbuttonbox.addWidget(self.playbutton)
         self.connect(self.playbutton, QtCore.SIGNAL("clicked()"),
-                     self.PlayPause)
+                     self.GUI_play_pause)
 
         self.stopbutton = QtGui.QPushButton("Stop")
         self.hbuttonbox.addWidget(self.stopbutton)
@@ -432,7 +441,11 @@ class NanarPlayer(QtGui.QMainWindow):
         self.connect(self.timer, QtCore.SIGNAL("timeout()"),
                      self.updateUI)
 
-    def PlayPause(self):
+    def GUI_play_pause(self):
+        self.play_pause()
+        self.conn.send_playpause()
+
+    def play_pause(self):
         if self.p.is_playing():
             self.p.pause()
             self.playbutton.setText("Play")
@@ -478,7 +491,7 @@ class NanarPlayer(QtGui.QMainWindow):
             self.p.set_hwnd(self.videoframe.winId())
         elif sys.platform == "darwin": # for MacOS
             self.p.set_agl(self.videoframe.windId())
-        self.PlayPause()
+        self.play_pause()
 
         # Ugly but fuck callbacks
         while self.p.get_length() == 0:
