@@ -4,11 +4,13 @@ import select
 import socket
 import sys
 import struct
+import user
 from PyQt4 import QtGui, QtCore
 
 MOVIE_TIME = 0
 PING = 1
 PLAYPAUSE = 2
+MESSAGE = 3
 
 conn_type = sys.argv[1]
 if len(sys.argv) == 3:
@@ -120,8 +122,8 @@ class Connection:
         self.type = conn_type
         port = 1337
         self.buff_datas = ""
-        self.reading = False;
-        self.LEN_MSG = 0;
+        self.reading = False
+        self.LEN_MSG = 0
         self.size = 65536
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -216,7 +218,6 @@ class Connection:
                     del self.pings[client]
 
         if time.time() - self.ping_check_time > 1:
-            print "pingpingping"
             for client in self.clients:
                 p = Ping(client)
                 self.send(self.get_datas_ping(p.id), client)
@@ -254,22 +255,36 @@ class Connection:
         elif self.type == "client":
             self.send(self.get_datas_playpause())
 
+    def send_message(self, msg):
+        if self.type == "server":
+            for client in self.clients:
+                self.send(self.get_datas_message(msg), client)
+        elif self.type == "client":
+            self.send(self.get_datas_message(msg))
+
     def process_data(self, data, client=None):
         bs.put_data(data)
         while bs.working():
             msgtype = bs.read_byte()
 
-            if msgtype == PLAYPAUSE:
-                if self.type == "client":
-                    self.app.play_pause()
-                elif self.type == "server":
+            if msgtype == MESSAGE:
+                msg = bs.read_UTF()
+                if self.type == "server":
+                    for bclient in self.clients:
+                        if bclient == client:
+                            continue
+                        self.send(self.get_datas_message(msg), bclient)
+                self.app.update_chat(msg)
+
+            elif msgtype == PLAYPAUSE:
+                if self.type == "server":
                     for bclient in self.clients:
                         if bclient == client:
                             continue
                         self.send(self.get_datas_playpause(), bclient)
-                    self.app.play_pause()
+                self.app.play_pause()
 
-            if msgtype == MOVIE_TIME:
+            elif msgtype == MOVIE_TIME:
                 # print "len", len(data)
                 t = bs.read_int()
                 if self.type == "client":
@@ -289,7 +304,7 @@ class Connection:
                     # update local
                     self.app.change_pos_from_net(t + avg_ping / 2)
 
-            if msgtype == PING:
+            elif msgtype == PING:
                 _id = bs.read_int()
                 if self.type == "client":
                     self.send(self.get_datas_ping(_id))
@@ -309,6 +324,9 @@ class Connection:
 
     def get_datas_playpause(self):
         return struct.pack("!B", PLAYPAUSE)
+
+    def get_datas_message(self, msg):
+        return struct.pack("!BH" + str(len(msg)) + "s", MESSAGE, len(msg), msg)
 
 
 class NanarPlayer(QtGui.QMainWindow):
@@ -380,6 +398,7 @@ class NanarPlayer(QtGui.QMainWindow):
             QtGui.QColor(0, 0, 0))
         self.videoframe.setPalette(self.palette)
         self.videoframe.setAutoFillBackground(True)
+        # self.videoframe.setGeometry(20, 20, 100, 100)
 
         self.positionslider = QtGui.QSlider(QtCore.Qt.Horizontal, self)
         self.positionslider.setToolTip("Position")
@@ -411,18 +430,22 @@ class NanarPlayer(QtGui.QMainWindow):
                      QtCore.SIGNAL("valueChanged(int)"),
                      self.setVolume)
 
+        self.hinputchatbox = QtGui.QHBoxLayout()
+        self.lenick = QtGui.QLineEdit()
+        self.lechat = QtGui.QLineEdit()
+        self.hinputchatbox.addWidget(self.lenick)
+        self.hinputchatbox.addWidget(self.lechat, 3)
+
+        self.te = QtGui.QTextEdit()
+        self.te.setMaximumHeight(60)
+
         self.vboxlayout = QtGui.QVBoxLayout()
-        self.vboxlayout.addWidget(self.videoframe)
+        self.vboxlayout.addWidget(self.videoframe, 2)
         self.vboxlayout.addWidget(self.positionslider)
         self.vboxlayout.addLayout(self.hbuttonbox)
-
-        # TESTS
-        self.layout = QtGui.QVBoxLayout()
-        self.le = QtGui.QLineEdit()
-        self.te = QtGui.QTextEdit()
-        self.layout.addWidget(self.te)
-        self.layout.addWidget(self.le)
-        # self.vboxlayout.addLayout(self.layout)
+        self.vboxlayout.addWidget(self.te)
+        # self.vboxlayout.addWidget(self.le)
+        self.vboxlayout.addLayout(self.hinputchatbox)
 
         self.widget.setLayout(self.vboxlayout)
 
@@ -440,6 +463,22 @@ class NanarPlayer(QtGui.QMainWindow):
         self.timer.setInterval(200)
         self.connect(self.timer, QtCore.SIGNAL("timeout()"),
                      self.updateUI)
+        self.connect(self.lechat, QtCore.SIGNAL("returnPressed(void)"),
+                     self.run_command)
+
+    def run_command(self):
+        nick = str(self.lenick.text())
+        if nick == "":
+            nick = "abitbol"
+        cmd = str(self.lechat.text())
+        print cmd
+        self.lenick.setText("")
+        pretty_msg = nick + " : " + cmd
+        self.update_chat(pretty_msg)
+        self.conn.send_message(pretty_msg)
+
+    def update_chat(self, txt):
+        self.te.append(txt)
 
     def GUI_play_pause(self):
         self.play_pause()
@@ -485,11 +524,11 @@ class NanarPlayer(QtGui.QMainWindow):
         # this is platform specific!
         # you have to give the id of the QFrame (or similar object) to
         # vlc, different platforms have different functions for this
-        if sys.platform == "linux2": # for Linux using the X Server
+        if sys.platform == "linux2":  # for Linux using the X Server
             self.p.set_xwindow(self.videoframe.winId())
-        elif sys.platform == "win32": # for Windows
+        elif sys.platform == "win32":  # for Windows
             self.p.set_hwnd(self.videoframe.winId())
-        elif sys.platform == "darwin": # for MacOS
+        elif sys.platform == "darwin":  # for MacOS
             self.p.set_agl(self.videoframe.windId())
         self.play_pause()
 
