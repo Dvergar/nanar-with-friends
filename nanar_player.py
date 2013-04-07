@@ -1,5 +1,4 @@
 import vlc
-import time
 import select
 import socket
 import sys
@@ -98,59 +97,19 @@ class BinaryStream:
 bs = BinaryStream()
 
 
-class Ping:
-    pending = {}
-    _id = 0
-
-    def __init__(self, client):
-        self.id = Ping._id
-        self.client = client
-        if not client in self.pending:
-            self.pending[client] = {}
-        self.pending[client][self.id] = self
-        self.time = time.time()
-        Ping._id += 1
-
-    def get_value(self):
-        del self.pending[self.client][self.id]
-        return time.time() * 1000 - self.time * 1000
-
-
 class Connection:
-    def __init__(self, app, conn_type, host='127.0.0.1'):
+    def __init__(self, app, host='127.0.0.1'):
         self.app = app
-        self.type = conn_type
         port = 1337
         self.buff_datas = ""
         self.reading = False
         self.LEN_MSG = 0
         self.size = 65536
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        print "Connection Type detected :", conn_type
-        if conn_type == "server":
-            backlog = 5
-            self.clients = []
-            self.pings = {}
-            self.server.bind((host, port))
-            self.server.listen(backlog)
-            self.update = self.server_update
-            self.send = self.server_send
-            self.ping_check_time = time.time() - 42
-        elif conn_type == "client":
-            self.server.connect((host, port))
-            self.update = self.client_update
-            self.send = self.client_send
-            # self.server.send("hello i am client")
+        self.server.connect((host, port))
         self.input = [self.server]
 
     def update(self):
-        return NotImplemented
-
-    def send(self):
-        return NotImplemented
-
-    def client_update(self):
         # print "client_update"
         inready, outready, exceptready = select.select(self.input, [], [], 0)
         if len(inready) == 1:
@@ -173,94 +132,24 @@ class Connection:
                         # use bytesIo instead
                         goot_data = self.buff_datas[:self.LEN_MSG]
                         self.buff_datas = self.buff_datas[self.LEN_MSG:]
-                        self.client_on_data(goot_data)
+                        self.on_data(goot_data)
                         self.reading = False
 
-            # data = self.server.recv()
-            # if data:
-            #     self.client_on_data(data)
-
-    def server_update(self):
-        # print "server_update"
-        inready, outready, exceptready = select.select(self.input, [], [], 0)
-
-        for s in inready:
-            if s == self.server:
-                client, address = self.server.accept()
-                self.input.append(client)
-                self.clients.append(client)
-                self.pings[client] = []
-                print "Connection from", address
-            else:
-                datas = s.recv(self.size)
-                if datas:
-                    self.buff_datas += datas
-                    if not self.reading:
-                        if len(self.buff_datas) > 2:
-                            self.LEN_MSG, = struct.unpack(
-                                "!H",
-                                self.buff_datas[0:2])
-                            self.buff_datas = self.buff_datas[2:]
-                            self.reading = True
-                    if self.reading:
-                        if len(self.buff_datas) >= self.LEN_MSG:
-                            # print "SERVER READABLE"
-                            # use bytesIo instead
-                            goot_data = self.buff_datas[:self.LEN_MSG]
-                            self.buff_datas = self.buff_datas[self.LEN_MSG:]
-                            self.server_on_data(s, goot_data)
-                            self.reading = False
-                else:
-                    print "close"
-                    s.close()
-                    self.input.remove(s)
-                    self.clients.remove(s)
-                    del self.pings[client]
-
-        if time.time() - self.ping_check_time > 1:
-            for client in self.clients:
-                p = Ping(client)
-                self.send(self.get_datas_ping(p.id), client)
-            self.ping_check_time = time.time()
-
-    def server_on_data(self, s, data):
-        # self.server_send(data)
-        self.process_data(data, s)
-
-    def client_on_data(self, data):
+    def on_data(self, data):
         self.process_data(data)
 
-    def server_send(self, data, client):
-        client.send(struct.pack("!H", len(data)))
-        client.send(data)
-
-    def client_send(self, data):
+    def send(self, data):
         self.server.send(struct.pack("!H", len(data)))
         self.server.send(data)
 
     def send_movie_time(self, t):
-        if self.type == "server":
-            for client in self.clients:
-                client_pings = self.pings[client]
-                avg_ping = sum(client_pings) / len(client_pings)
-                new_t = t + avg_ping / 2
-                self.send(self.get_datas_slider_update(new_t), client)
-        elif self.type == "client":
-            self.send(self.get_datas_slider_update(t))
+        self.send(self.get_datas_slider_update(t))
 
     def send_playpause(self):
-        if self.type == "server":
-            for client in self.clients:
-                self.send(self.get_datas_playpause(), client)
-        elif self.type == "client":
-            self.send(self.get_datas_playpause())
+        self.send(self.get_datas_playpause())
 
     def send_message(self, msg):
-        if self.type == "server":
-            for client in self.clients:
-                self.send(self.get_datas_message(msg), client)
-        elif self.type == "client":
-            self.send(self.get_datas_message(msg))
+        self.send(self.get_datas_message(msg))
 
     def process_data(self, data, client=None):
         bs.put_data(data)
@@ -269,52 +158,18 @@ class Connection:
 
             if msgtype == MESSAGE:
                 msg = bs.read_UTF()
-                if self.type == "server":
-                    for bclient in self.clients:
-                        if bclient == client:
-                            continue
-                        self.send(self.get_datas_message(msg), bclient)
                 self.app.update_chat(msg)
 
             elif msgtype == PLAYPAUSE:
-                if self.type == "server":
-                    for bclient in self.clients:
-                        if bclient == client:
-                            continue
-                        self.send(self.get_datas_playpause(), bclient)
                 self.app.play_pause()
 
             elif msgtype == MOVIE_TIME:
-                # print "len", len(data)
                 t = bs.read_int()
-                if self.type == "client":
-                    self.app.change_pos_from_net(t)  # t already smoothed
-                elif self.type == "server":
-                    client_pings = self.pings[client]
-                    avg_ping = sum(client_pings) / len(client_pings)
-
-                    # broadcast
-                    for bclient in self.clients:
-                        if bclient == client:
-                            continue
-                        b_avg_ping = sum(client_pings) / len(client_pings)
-                        new_t = avg_ping / 2 + b_avg_ping / 2 + t
-                        self.send(self.get_datas_slider_update(new_t), bclient)
-
-                    # update local
-                    self.app.change_pos_from_net(t + avg_ping / 2)
+                self.app.change_pos_from_net(t)  # t already smoothed
 
             elif msgtype == PING:
                 _id = bs.read_int()
-                if self.type == "client":
-                    self.send(self.get_datas_ping(_id))
-                elif self.type == "server":
-                    ping = Ping.pending[client][_id].get_value()
-                    client_pings = self.pings[client]
-                    if len(client_pings) > 50:
-                        del client_pings[0]
-                    client_pings.append(ping)
-                    avg_ping = sum(client_pings) / len(client_pings)
+                self.send(self.get_datas_ping(_id))
 
     def get_datas_slider_update(self, pos):
         return struct.pack("!Bi", MOVIE_TIME, pos)
@@ -334,7 +189,7 @@ class NanarPlayer(QtGui.QMainWindow):
         QtGui.QMainWindow.__init__(self, master)
 
         self.loop_rate = 10
-        self.conn = Connection(self, conn_type, host)
+        self.conn = Connection(self, host)
         self.start_loop()
 
         self.setWindowTitle("NanarPlayer")
@@ -359,11 +214,11 @@ class NanarPlayer(QtGui.QMainWindow):
     def change_pos(self):
         print "LOCAL pos", self.slider_pos
         k = self.p.get_length() / 1000.
-        time = k * self.slider_pos
-        print "time", time
+        timee = k * self.slider_pos
+        print "time", timee
 
-        self.set_slider_position(time)
-        self.conn.send_movie_time(time)
+        self.set_slider_position(timee)
+        self.conn.send_movie_time(timee)
 
     def change_pos_from_net(self, time):
         print "NET pos", time
@@ -472,9 +327,9 @@ class NanarPlayer(QtGui.QMainWindow):
             nick = "abitbol"
         cmd = str(self.lechat.text())
         print cmd
-        self.lenick.setText("")
+        self.lechat.setText("")
         pretty_msg = nick + " : " + cmd
-        self.update_chat(pretty_msg)
+        # self.update_chat(pretty_msg)
         self.conn.send_message(pretty_msg)
 
     def update_chat(self, txt):
@@ -504,7 +359,8 @@ class NanarPlayer(QtGui.QMainWindow):
 
     def OpenFile(self, filename=None):
         if filename is None:
-            filename = QtGui.QFileDialog.getOpenFileName(self, "Open File", user.home)
+            filename = QtGui.QFileDialog.getOpenFileName(self, "Open File",
+                                                         user.home)
         if not filename:
             return
 
