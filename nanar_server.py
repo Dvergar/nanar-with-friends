@@ -150,7 +150,6 @@ class Server:
                                 self.reading = True
                         if self.reading:
                             if len(self.buff_datas) >= self.LEN_MSG:
-                                # print "SERVER READABLE"
                                 # use bytesIo instead
                                 goot_data = self.buff_datas[:self.LEN_MSG]
                                 self.buff_datas = (self.buff_datas[
@@ -171,7 +170,6 @@ class Server:
                 self.ping_check_time = time.time()
 
     def on_data(self, s, data):
-        # self.server_send(data)
         self.process_data(data, s)
 
     def send(self, data, client):

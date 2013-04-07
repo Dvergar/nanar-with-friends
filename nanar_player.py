@@ -5,17 +5,13 @@ import sys
 import struct
 import user
 from PyQt4 import QtGui, QtCore
+import argparse
+
 
 MOVIE_TIME = 0
 PING = 1
 PLAYPAUSE = 2
 MESSAGE = 3
-
-conn_type = sys.argv[1]
-if len(sys.argv) == 3:
-    host = sys.argv[2]
-else:
-    host = '127.0.0.1'
 
 
 class BinaryStream:
@@ -123,12 +119,9 @@ class Connection:
                             "!H",
                             self.buff_datas[0:2])
                         self.buff_datas = self.buff_datas[2:]
-                        # print "lenmsg", self.LEN_MSG
-                        # print "lenbuffdatas", len(self.buff_datas)
                         self.reading = True
                 if self.reading:
                     if len(self.buff_datas) >= self.LEN_MSG:
-                        # print "CLIENT READABLE"
                         # use bytesIo instead
                         goot_data = self.buff_datas[:self.LEN_MSG]
                         self.buff_datas = self.buff_datas[self.LEN_MSG:]
@@ -185,13 +178,8 @@ class Connection:
 
 
 class NanarPlayer(QtGui.QMainWindow):
-    def __init__(self, master=None):
+    def __init__(self, host, _input, master=None):
         QtGui.QMainWindow.__init__(self, master)
-
-        self.loop_rate = 10
-        self.conn = Connection(self, host)
-        self.start_loop()
-
         self.setWindowTitle("NanarPlayer")
 
         # creating a basic vlc instance
@@ -199,16 +187,32 @@ class NanarPlayer(QtGui.QMainWindow):
         # creating an empty vlc media player
         self.p = self.instance.media_player_new()
 
+        # UI
         self.createUI()
+        self.p.audio_set_volume(0)
         self.isPaused = False
         self.slider_is_moving = False
         self.slider_pos = 0
-        self.OpenFile("C:/Users/Caribou/Dropbox/Public/test_video.avi")
-        self.p.audio_set_volume(0)
 
-    def start_loop(self):
+        # Net
+        self.loop_rate = 10
+        if host is not None:
+            print "Connecting to...", host
+            try:
+                self.make_connection(host)
+            except socket.error, (value, message):
+                print "Connection problem !", message
+                sys.exit(self)
+
+        # File/stream
+        if _input is not None:
+            print "Opening :", _input
+            self.OpenFile(_input)
+
+    def make_connection(self, host):
+        self.conn = Connection(self, host)
         self.timer2 = QtCore.QTimer()
-        self.timer2.timeout.connect(self.loop)
+        self.timer2.timeout.connect(self.conn.update)
         self.timer2.start(10)
 
     def change_pos(self):
@@ -233,9 +237,6 @@ class NanarPlayer(QtGui.QMainWindow):
             pos = 0.99
         print "setpos", pos
         self.p.set_position(pos)
-
-    def loop(self):
-        self.conn.update()
 
     def on_slider_move(self, pos):
         self.slider_is_moving = True
@@ -417,7 +418,18 @@ class NanarPlayer(QtGui.QMainWindow):
 
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv)
-    nanar_player = NanarPlayer()
+
+    # if sys.argv[1:]:
+    #     host = sys.argv[1]
+    # else:
+    #     host = "127.0.0.1"
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", help="give file or stream to read")
+    parser.add_argument("-a", "--address", help="server ip address")
+    args = parser.parse_args()
+
+    nanar_player = NanarPlayer(args.address, args.input)
     nanar_player.show()
     nanar_player.resize(640, 480)
     # if sys.argv[1:]:
