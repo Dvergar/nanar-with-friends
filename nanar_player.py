@@ -323,10 +323,10 @@ class NanarPlayer(QtGui.QMainWindow):
                      self.run_command)
 
     def run_command(self):
-        nick = str(self.lenick.text())
+        nick = str(self.lenick.text().toUtf8())
         if nick == "":
             nick = "abitbol"
-        cmd = str(self.lechat.text())
+        cmd = str(self.lechat.text().toUtf8())
         print cmd
         self.lechat.setText("")
         pretty_msg = nick + " : " + cmd
@@ -334,7 +334,8 @@ class NanarPlayer(QtGui.QMainWindow):
         self.conn.send_message(pretty_msg)
 
     def update_chat(self, txt):
-        self.te.append(txt)
+        supertxt = QtCore.QString.fromUtf8(txt)
+        self.te.append(supertxt)
 
     def GUI_play_pause(self):
         self.play_pause()
