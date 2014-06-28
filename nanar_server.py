@@ -2,7 +2,10 @@ import select
 import socket
 import struct
 import time
-
+from twisted.internet.protocol import Factory
+from twisted.protocols.basic import LineReceiver
+from twisted.internet import reactor
+from twisted.internet.task import LoopingCall
 
 MOVIE_TIME = 0
 PING = 1
@@ -89,136 +92,76 @@ class BinaryStream:
 bs = BinaryStream()
 
 
-class Ping:
-    pending = {}
-    _id = 0
+class Connection(LineReceiver):
 
-    def __init__(self, client):
-        self.id = Ping._id
-        self.client = client
-        if not client in self.pending:
-            self.pending[client] = {}
-        self.pending[client][self.id] = self
-        self.time = time.time()
-        Ping._id += 1
+    def __init__(self, clients):
+        self.clients = clients
+        self.pings = []
+        self.ping_check_time = time.time()
 
-    def get_value(self):
-        del self.pending[self.client][self.id]
-        return time.time() * 1000 - self.time * 1000
+    def connectionMade(self):
+        print "connectionMade"
+        self.clients.append(self)
+        lc = LoopingCall(self.ping_update)
+        lc.start(1)
 
+    def connectionLost(self, reason):
+        print "connectionLost"
+        self.clients.remove(self)
 
-class Server:
-    def __init__(self, host='127.0.0.1'):
-        port = 1337
-        self.buff_datas = ""
-        self.reading = False
-        self.LEN_MSG = 0
-        self.size = 65536
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def lineReceived(self, line):
+        self.process_data(line)
 
-        backlog = 5
-        self.clients = []
-        self.pings = {}
-        self.server.bind((host, port))
-        self.server.listen(backlog)
-        self.ping_check_time = time.time() - 42
+    def ping_update(self):
+        print "ping_update (broadcast)"
+        self.broadcast(self.get_datas_ping())
+        self.ping_check_time = time.time()
 
-        self.input = [self.server]
-        self.update()
+    def broadcast(self, data, exception=None):
+        for client in self.clients:
+            if client is exception: continue
+            client.sendLine(data)
 
-    def update(self):
-        while True:
-            inready, outready, exready = select.select(self.input, [], [], 0)
-
-            for s in inready:
-                if s == self.server:
-                    client, address = self.server.accept()
-                    self.input.append(client)
-                    self.clients.append(client)
-                    self.pings[client] = []
-                    print "Connection from", address
-                else:
-                    datas = s.recv(self.size)
-                    if datas:
-                        self.buff_datas += datas
-                        if not self.reading:
-                            if len(self.buff_datas) > 2:
-                                self.LEN_MSG, = struct.unpack(
-                                    "!H",
-                                    self.buff_datas[0:2])
-                                self.buff_datas = self.buff_datas[2:]
-                                self.reading = True
-                        if self.reading:
-                            if len(self.buff_datas) >= self.LEN_MSG:
-                                # use bytesIo instead
-                                goot_data = self.buff_datas[:self.LEN_MSG]
-                                self.buff_datas = (self.buff_datas[
-                                                   self.LEN_MSG:])
-                                self.on_data(s, goot_data)
-                                self.reading = False
-                    else:
-                        print "close"
-                        s.close()
-                        self.input.remove(s)
-                        self.clients.remove(s)
-                        del self.pings[client]
-
-            if time.time() - self.ping_check_time > 1:
-                for client in self.clients:
-                    p = Ping(client)
-                    self.send(self.get_datas_ping(p.id), client)
-                self.ping_check_time = time.time()
-
-    def on_data(self, s, data):
-        self.process_data(data, s)
-
-    def send(self, data, client):
-        client.send(struct.pack("!H", len(data)))
-        client.send(data)
-
-    def process_data(self, data, client=None):
+    def process_data(self, data):
         bs.put_data(data)
         while bs.working():
             msgtype = bs.read_byte()
 
             if msgtype == MESSAGE:
+                print "MESSAGE"
                 msg = bs.read_UTF()
-                for bclient in self.clients:
-                    self.send(self.get_datas_message(msg), bclient)
+                self.broadcast(self.get_datas_message(msg))
 
             elif msgtype == PLAYPAUSE:
-                for bclient in self.clients:
-                    if bclient == client:
-                        continue
-                    self.send(self.get_datas_playpause(), bclient)
+                print "PLAYPAUSE"
+                self.broadcast(self.get_datas_playpause(), self)
 
             elif msgtype == MOVIE_TIME:
+                print "MOVIE_TIME"
                 t = bs.read_int()
 
-                client_pings = self.pings[client]
-                avg_ping = sum(client_pings) / len(client_pings)
-
                 # broadcast
-                for bclient in self.clients:
-                    b_avg_ping = sum(client_pings) / len(client_pings)
-                    new_t = avg_ping / 2 + b_avg_ping / 2 + t
-                    self.send(self.get_datas_slider_update(new_t), bclient)
+                for client in self.clients:
+                    # if client is self: continue
+                    new_t = self.ping / 2 + client.ping / 2 + t
+                    print "new_t", new_t
+                    client.sendLine(self.get_datas_slider_update(new_t))
 
             elif msgtype == PING:
-                _id = bs.read_int()
+                print "PING"
+                self.pings.append(time.time() - self.ping_check_time)
+                if len(self.pings) > 50:
+                    del self.pings[0]
 
-                ping = Ping.pending[client][_id].get_value()
-                client_pings = self.pings[client]
-                if len(client_pings) > 50:
-                    del client_pings[0]
-                client_pings.append(ping)
-                avg_ping = sum(client_pings) / len(client_pings)
+    @property
+    def ping(self):
+        return (sum(self.pings) / len(self.pings)) * 1000
 
     def get_datas_slider_update(self, pos):
         return struct.pack("!Bi", MOVIE_TIME, pos)
 
-    def get_datas_ping(self, _id):
-        return struct.pack("!Bi", PING, _id)
+    def get_datas_ping(self):
+        return struct.pack("!B", PING)
 
     def get_datas_playpause(self):
         return struct.pack("!B", PLAYPAUSE)
@@ -227,5 +170,15 @@ class Server:
         return struct.pack("!BH" + str(len(msg)) + "s", MESSAGE, len(msg), msg)
 
 
+class ServerFactory(Factory):
+
+    def __init__(self):
+        self.clients = []
+
+    def buildProtocol(self, addr):
+        return Connection(self.clients)
+
+
 if __name__ == "__main__":
-    Server()
+    reactor.listenTCP(1337, ServerFactory())
+    reactor.run()

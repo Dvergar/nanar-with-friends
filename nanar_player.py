@@ -4,9 +4,16 @@ import socket
 import sys
 import struct
 import user
-from PyQt4 import QtGui, QtCore
 import argparse
 
+from PyQt4 import QtGui, QtCore
+app = QtGui.QApplication(sys.argv)
+import qt4reactor
+qt4reactor.install()
+
+from twisted.internet.protocol import Factory
+from twisted.protocols.basic import LineReceiver
+from twisted.internet import reactor
 
 MOVIE_TIME = 0
 PING = 1
@@ -93,56 +100,32 @@ class BinaryStream:
 bs = BinaryStream()
 
 
-class Connection:
-    def __init__(self, app, host='127.0.0.1'):
-        self.app = app
-        port = 1337
-        self.buff_datas = ""
-        self.reading = False
-        self.LEN_MSG = 0
-        self.size = 65536
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.connect((host, port))
-        self.input = [self.server]
+class Connection(LineReceiver):
+    def __init__(self, player):
+        self.player = player
 
-    def update(self):
-        # print "client_update"
-        inready, outready, exceptready = select.select(self.input, [], [], 0)
-        if len(inready) == 1:
-            datas = self.server.recv(self.size)
-            if datas:
-                # print "lendatas", len(datas)
-                self.buff_datas += datas
-                if not self.reading:
-                    if len(self.buff_datas) > 2:
-                        self.LEN_MSG, = struct.unpack(
-                            "!H",
-                            self.buff_datas[0:2])
-                        self.buff_datas = self.buff_datas[2:]
-                        self.reading = True
-                if self.reading:
-                    if len(self.buff_datas) >= self.LEN_MSG:
-                        # use bytesIo instead
-                        goot_data = self.buff_datas[:self.LEN_MSG]
-                        self.buff_datas = self.buff_datas[self.LEN_MSG:]
-                        self.on_data(goot_data)
-                        self.reading = False
+    def connectionMade(self):
+        print "connectionMade"
+        self.player.conn = self
+
+    def connectionLost(self, reason):
+        print "connectionLost"
+
+    def lineReceived(self, line):
+        self.process_data(line)
 
     def on_data(self, data):
         self.process_data(data)
 
-    def send(self, data):
-        self.server.send(struct.pack("!H", len(data)))
-        self.server.send(data)
-
     def send_movie_time(self, t):
-        self.send(self.get_datas_slider_update(t))
+        print "send_movie_time"
+        self.sendLine(self.get_datas_slider_update(t))
 
     def send_playpause(self):
-        self.send(self.get_datas_playpause())
+        self.sendLine(self.get_datas_playpause())
 
     def send_message(self, msg):
-        self.send(self.get_datas_message(msg))
+        self.sendLine(self.get_datas_message(msg))
 
     def process_data(self, data, client=None):
         bs.put_data(data)
@@ -151,24 +134,24 @@ class Connection:
 
             if msgtype == MESSAGE:
                 msg = bs.read_UTF()
-                self.app.update_chat(msg)
+                self.player.update_chat(msg)
 
             elif msgtype == PLAYPAUSE:
-                self.app.play_pause()
+                self.player.play_pause()
 
             elif msgtype == MOVIE_TIME:
+                print "movietime"
                 t = bs.read_int()
-                self.app.change_pos_from_net(t)  # t already smoothed
+                self.player.change_pos_from_net(t)  # t already smoothed
 
             elif msgtype == PING:
-                _id = bs.read_int()
-                self.send(self.get_datas_ping(_id))
+                self.sendLine(self.get_datas_ping())
 
     def get_datas_slider_update(self, pos):
         return struct.pack("!Bi", MOVIE_TIME, pos)
 
-    def get_datas_ping(self, _id):
-        return struct.pack("!Bi", PING, _id)
+    def get_datas_ping(self):
+        return struct.pack("!B", PING)
 
     def get_datas_playpause(self):
         return struct.pack("!B", PLAYPAUSE)
@@ -181,7 +164,8 @@ class NanarPlayer(QtGui.QMainWindow):
     def __init__(self, host, _input, master=None):
         QtGui.QMainWindow.__init__(self, master)
         self.setWindowTitle("NanarPlayer")
-
+        self.conn = None
+        
         # creating a basic vlc instance
         self.instance = vlc.Instance()
         # creating an empty vlc media player
@@ -194,26 +178,10 @@ class NanarPlayer(QtGui.QMainWindow):
         self.slider_is_moving = False
         self.slider_pos = 0
 
-        # Net
-        self.loop_rate = 10
-        if host is not None:
-            print "Connecting to...", host
-            try:
-                self.make_connection(host)
-            except socket.error, (value, message):
-                print "Connection problem !", message
-                sys.exit(self)
-
         # File/stream
         if _input is not None:
             print "Opening :", _input
             self.OpenFile(_input)
-
-    def make_connection(self, host):
-        self.conn = Connection(self, host)
-        self.timer2 = QtCore.QTimer()
-        self.timer2.timeout.connect(self.conn.update)
-        self.timer2.start(10)
 
     def change_pos(self):
         print "LOCAL pos", self.slider_pos
@@ -222,7 +190,8 @@ class NanarPlayer(QtGui.QMainWindow):
         print "time", timee
 
         self.set_slider_position(timee)
-        self.conn.send_movie_time(timee)
+        if self.conn is not None:
+            self.conn.send_movie_time(timee)
 
     def change_pos_from_net(self, time):
         print "NET pos", time
@@ -417,22 +386,38 @@ class NanarPlayer(QtGui.QMainWindow):
                 # this will fix it
                 self.Stop()
 
+
+class ClientFactory(Factory):
+
+    def __init__(self, player):
+        self.player = player
+
+    def buildProtocol(self, addr):
+        return Connection(self.player)
+
+    def startedConnecting(self, connectorInstance):
+        print connectorInstance
+
+    def clientConnectionLost(self, connection, reason):
+        print reason
+        print connection
+
+    def clientConnectionFailed(self, connection, reason):
+        print connection
+        print reason
+
+    def doStop(self):
+        pass
+
 if __name__ == "__main__":
-    app = QtGui.QApplication(sys.argv)
-
-    # if sys.argv[1:]:
-    #     host = sys.argv[1]
-    # else:
-    #     host = "127.0.0.1"
-
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", help="give file or stream to read")
     parser.add_argument("-a", "--address", help="server ip address")
     args = parser.parse_args()
 
-    nanar_player = NanarPlayer(args.address, args.input)
-    nanar_player.show()
-    nanar_player.resize(640, 480)
-    # if sys.argv[1:]:
-    #     nanar_player.OpenFile(sys.argv[1])
-    sys.exit(app.exec_())
+    player = NanarPlayer(args.address, args.input)
+    player.show()
+    player.resize(640, 480)
+
+    reactor.connectTCP('localhost', 1337, ClientFactory(player))
+    reactor.run()
