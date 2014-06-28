@@ -27,7 +27,7 @@ class Connection(LineReceiver):
         print "connectionMade"
         self.clients.append(self)
         lc = LoopingCall(self.ping_update)
-        lc.start(1 / 10)
+        lc.start(0.2)
 
     def connectionLost(self, reason):
         print "connectionLost"
@@ -48,11 +48,9 @@ class Connection(LineReceiver):
             client.sendLine(data)
 
     def process_data(self, data):
-        print "process_data"
         bs = BinaryStream(data)
 
         msgtype = bs.read_byte()
-        print "msgtype", repr(msgtype)
 
         if msgtype == MESSAGE:
             print "MESSAGE"
