@@ -15,89 +15,13 @@ from twisted.internet.protocol import Factory
 from twisted.protocols.basic import LineReceiver
 from twisted.internet import reactor
 
+from binarystream import BinaryStream
+
+
 MOVIE_TIME = 0
 PING = 1
 PLAYPAUSE = 2
 MESSAGE = 3
-
-
-class BinaryStream:
-    def __init__(self):
-        self.byte_struct = struct.Struct("!b")
-        self.ubyte_struct = struct.Struct("!B")
-        self.int_struct = struct.Struct("!i")
-        self.short_struct = struct.Struct("!h")
-        self.ushort_struct = struct.Struct("!H")
-        self.float_struct = struct.Struct("!f")
-
-    def put_data(self, data):
-        self.data = data
-        self.len_data = len(data)
-        self.pos = 0
-
-    def read_data_left(self):
-        return self.data[self.pos:]
-
-    def read_byte(self):
-        size = 1
-        byte = self.data[self.pos:self.pos + size]
-        byte, = self.byte_struct.unpack(byte)
-        self.pos += size
-        return byte
-
-    def read_ubyte(self):
-        size = 1
-        byte = self.data[self.pos:self.pos + size]
-        byte, = self.ubyte_struct.unpack(byte)
-        self.pos += size
-        return byte
-
-    def read_float(self):
-        size = 4
-        _float = self.data[self.pos:self.pos + size]
-        _float, = self.float_struct.unpack(_float)
-        self.pos += size
-        return _float
-
-    def read_int(self):
-        size = 4
-        _int = self.data[self.pos:self.pos + size]
-        _int, = self.int_struct.unpack(_int)
-        self.pos += size
-        return _int
-
-    def read_short(self):
-        size = 2
-        short = self.data[self.pos:self.pos + size]
-        short, = self.short_struct.unpack(short)
-        self.pos += size
-        return short
-
-    def read_ushort(self):
-        size = 2
-        ushort = self.data[self.pos:self.pos + size]
-        ushort, = self.ushort_struct.unpack(ushort)
-        self.pos += size
-        return ushort
-
-    def read_UTF(self):
-        print "UTF", repr(self.data)
-        size = 2
-        length = self.data[self.pos:self.pos + size]
-        length, = self.short_struct.unpack(length)
-        self.pos += size
-        string = self.data[self.pos:self.pos + length]
-        string, = struct.unpack("!" + str(length) + "s", string)
-        self.pos += length
-        return string
-
-    def working(self):
-        if self.pos == self.len_data:
-            return False
-        else:
-            return True
-
-bs = BinaryStream()
 
 
 class Connection(LineReceiver):
@@ -128,24 +52,24 @@ class Connection(LineReceiver):
         self.sendLine(self.get_datas_message(msg))
 
     def process_data(self, data, client=None):
-        bs.put_data(data)
-        while bs.working():
-            msgtype = bs.read_byte()
+        bs = BinaryStream(data)
 
-            if msgtype == MESSAGE:
-                msg = bs.read_UTF()
-                self.player.update_chat(msg)
+        msgtype = bs.read_byte()
 
-            elif msgtype == PLAYPAUSE:
-                self.player.play_pause()
+        if msgtype == MESSAGE:
+            msg = bs.read_string()
+            self.player.update_chat(msg)
 
-            elif msgtype == MOVIE_TIME:
-                print "movietime"
-                t = bs.read_int()
-                self.player.change_pos_from_net(t)  # t already smoothed
+        elif msgtype == PLAYPAUSE:
+            self.player.play_pause()
 
-            elif msgtype == PING:
-                self.sendLine(self.get_datas_ping())
+        elif msgtype == MOVIE_TIME:
+            t = bs.read_int32()
+            print "movietime", t
+            self.player.change_pos_from_net(t)  # t already smoothed
+
+        elif msgtype == PING:
+            self.sendLine(self.get_datas_ping())
 
     def get_datas_slider_update(self, pos):
         return struct.pack("!Bi", MOVIE_TIME, pos)

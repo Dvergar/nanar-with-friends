@@ -7,89 +7,13 @@ from twisted.protocols.basic import LineReceiver
 from twisted.internet import reactor
 from twisted.internet.task import LoopingCall
 
+from binarystream import BinaryStream
+
+
 MOVIE_TIME = 0
 PING = 1
 PLAYPAUSE = 2
 MESSAGE = 3
-
-
-class BinaryStream:
-    def __init__(self):
-        self.byte_struct = struct.Struct("!b")
-        self.ubyte_struct = struct.Struct("!B")
-        self.int_struct = struct.Struct("!i")
-        self.short_struct = struct.Struct("!h")
-        self.ushort_struct = struct.Struct("!H")
-        self.float_struct = struct.Struct("!f")
-
-    def put_data(self, data):
-        self.data = data
-        self.len_data = len(data)
-        self.pos = 0
-
-    def read_data_left(self):
-        return self.data[self.pos:]
-
-    def read_byte(self):
-        size = 1
-        byte = self.data[self.pos:self.pos + size]
-        byte, = self.byte_struct.unpack(byte)
-        self.pos += size
-        return byte
-
-    def read_ubyte(self):
-        size = 1
-        byte = self.data[self.pos:self.pos + size]
-        byte, = self.ubyte_struct.unpack(byte)
-        self.pos += size
-        return byte
-
-    def read_float(self):
-        size = 4
-        _float = self.data[self.pos:self.pos + size]
-        _float, = self.float_struct.unpack(_float)
-        self.pos += size
-        return _float
-
-    def read_int(self):
-        size = 4
-        _int = self.data[self.pos:self.pos + size]
-        _int, = self.int_struct.unpack(_int)
-        self.pos += size
-        return _int
-
-    def read_short(self):
-        size = 2
-        short = self.data[self.pos:self.pos + size]
-        short, = self.short_struct.unpack(short)
-        self.pos += size
-        return short
-
-    def read_ushort(self):
-        size = 2
-        ushort = self.data[self.pos:self.pos + size]
-        ushort, = self.ushort_struct.unpack(ushort)
-        self.pos += size
-        return ushort
-
-    def read_UTF(self):
-        print "UTF", repr(self.data)
-        size = 2
-        length = self.data[self.pos:self.pos + size]
-        length, = self.short_struct.unpack(length)
-        self.pos += size
-        string = self.data[self.pos:self.pos + length]
-        string, = struct.unpack("!" + str(length) + "s", string)
-        self.pos += length
-        return string
-
-    def working(self):
-        if self.pos == self.len_data:
-            return False
-        else:
-            return True
-
-bs = BinaryStream()
 
 
 class Connection(LineReceiver):
@@ -103,7 +27,7 @@ class Connection(LineReceiver):
         print "connectionMade"
         self.clients.append(self)
         lc = LoopingCall(self.ping_update)
-        lc.start(1)
+        lc.start(1 / 10)
 
     def connectionLost(self, reason):
         print "connectionLost"
@@ -113,45 +37,47 @@ class Connection(LineReceiver):
         self.process_data(line)
 
     def ping_update(self):
-        print "ping_update (broadcast)"
+        # print "ping_update (broadcast)"
         self.broadcast(self.get_datas_ping())
         self.ping_check_time = time.time()
 
     def broadcast(self, data, exception=None):
+        # print "broadcast"
         for client in self.clients:
             if client is exception: continue
             client.sendLine(data)
 
     def process_data(self, data):
-        bs.put_data(data)
-        while bs.working():
-            msgtype = bs.read_byte()
+        print "process_data"
+        bs = BinaryStream(data)
 
-            if msgtype == MESSAGE:
-                print "MESSAGE"
-                msg = bs.read_UTF()
-                self.broadcast(self.get_datas_message(msg))
+        msgtype = bs.read_byte()
+        print "msgtype", repr(msgtype)
 
-            elif msgtype == PLAYPAUSE:
-                print "PLAYPAUSE"
-                self.broadcast(self.get_datas_playpause(), self)
+        if msgtype == MESSAGE:
+            print "MESSAGE"
+            msg = bs.read_string()
+            self.broadcast(self.get_datas_message(msg))
 
-            elif msgtype == MOVIE_TIME:
-                print "MOVIE_TIME"
-                t = bs.read_int()
+        elif msgtype == PLAYPAUSE:
+            print "PLAYPAUSE"
+            self.broadcast(self.get_datas_playpause(), self)
 
-                # broadcast
-                for client in self.clients:
-                    # if client is self: continue
-                    new_t = self.ping / 2 + client.ping / 2 + t
-                    print "new_t", new_t
-                    client.sendLine(self.get_datas_slider_update(new_t))
+        elif msgtype == MOVIE_TIME:
+            print "MOVIE_TIME"
+            t = bs.read_int32()
 
-            elif msgtype == PING:
-                print "PING"
-                self.pings.append(time.time() - self.ping_check_time)
-                if len(self.pings) > 50:
-                    del self.pings[0]
+            # broadcast
+            for client in self.clients:
+                if client is self: continue
+                new_t = self.ping / 2 + client.ping / 2 + t
+                print "new_t", new_t
+                client.sendLine(self.get_datas_slider_update(new_t))
+
+        elif msgtype == PING:
+            self.pings.append(time.time() - self.ping_check_time)
+            if len(self.pings) > 50:
+                del self.pings[0]
 
     @property
     def ping(self):
